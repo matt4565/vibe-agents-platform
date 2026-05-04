@@ -1,0 +1,7 @@
+.env
+*.log
+node_modules/
+__pycache__/
+.DS_Store
+venv/
+*.json  # ONLY if your service account keys or secrets are in JSON
