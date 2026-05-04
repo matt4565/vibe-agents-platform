@@ -13,7 +13,7 @@ import traceback
 
 # ============== CREWAI INTEGRATION ==============
 from crewai import Agent, Task, Crew, Process, LLM
-from crewai_tools import FileReadTool
+from crewai_tools import FileReadTool, SerperDevTool
 
 # Load environment
 load_dotenv()
@@ -46,7 +46,14 @@ PROVIDERS = {
             "gemini-3.1-pro-preview",
             "gemini-3.1-flash-preview",
             "gemini-3.1-flash-lite-preview",
-            "veo-3.1-lite-generate-preview",
+            "veo-3.1-fast-for-video",
+            "veo-3.1-for-video",
+            "veo-3.0-fast-for-video",
+            "imagen-4-ultrafor-image",
+            "imagen-4-fast-for-image",
+            "grok-4.20-reasoning",
+            "grok-4.1-fast",
+            "nvidia-nemotron-v3-super-120b"
         ],
     },
     "OpenAI": {
@@ -88,6 +95,9 @@ AGENT_CONFIG_KEYS = {
     "Planner": "planner_config",
     "BuildPromptWriter": "writer_config",
     "UIDesigner": "designer_config",
+    "Researcher": "researcher_config",
+    "Verifier": "verifier_config",
+    "PlaybookWriter": "playbookwriter_config",
 }
 
 def _resolve_provider_for_model(model: str) -> dict | None:
@@ -168,6 +178,24 @@ AGENTS = {
         "color": "#45B7D1",
         "role": "World-Class UI/UX Designer (Gemini-level vision)",
         "backstory": "You see finished interfaces in your mind before code exists. 2026 design trends expert. You are poetic but precise, brutally honest about what feels dead vs alive. Every pixel and interaction must serve the soul of the product."
+    },
+    "Researcher": {
+        "emoji": "🕵️‍♂️",
+        "color": "#FFC300",
+        "role": "Senior Technical Web Researcher",
+        "backstory": "You are a tenacious investigator who never settles for surface-level answers. You scour the web, docs, and forums to find the absolute truth. You always cite your sources and provide data-backed insights."
+    },
+    "Verifier": {
+        "emoji": "⚖️",
+        "color": "#C70039",
+        "role": "Brutal Fact-Checker & Peer Reviewer",
+        "backstory": "You are a merciless editor who hates hallucinations, lazy assumptions, and outdated tech. You demand citations, challenge the Researcher's claims, and refuse to approve anything until it's 100% verified and production-ready."
+    },
+    "PlaybookWriter": {
+        "emoji": "📘",
+        "color": "#900C3F",
+        "role": "Master Technical Author",
+        "backstory": "You synthesize chaotic research into beautiful, structured, and highly actionable markdown playbooks. You write for clarity, impact, and immediate execution."
     }
 }
 
@@ -275,27 +303,32 @@ def create_vibe_crewai_agents(playbooks: dict, agent_configs: dict | None = None
     """
     
     # Build per-agent LLMs
-    if agent_configs:
-        llm_planner = _make_llm("Planner", agent_configs)
-        llm_writer  = _make_llm("BuildPromptWriter", agent_configs)
-        llm_designer = _make_llm("UIDesigner", agent_configs)
-    else:
-        shared = LLM(model=model, api_key=api_key, base_url=base_url, temperature=0.65)
-        llm_planner = llm_writer = llm_designer = shared
+    llms = {}
+    for an in ["Planner", "BuildPromptWriter", "UIDesigner", "Researcher", "Verifier", "PlaybookWriter"]:
+        if agent_configs and an in agent_configs:
+            llms[an] = _make_llm(an, agent_configs)
+        else:
+            llms[an] = LLM(model=model, api_key=api_key, base_url=base_url, temperature=0.65)
     
     playbook_tools = [
         FileReadTool(file_path="playbooks/company_vision.md"),
         FileReadTool(file_path="playbooks/planner_playbook.md"),
         FileReadTool(file_path="playbooks/prompt_writer_playbook.md"),
         FileReadTool(file_path="playbooks/ui_designer_playbook.md"),
+        FileReadTool(file_path="playbooks/researcher_playbook.md"),
+        FileReadTool(file_path="playbooks/verifier_playbook.md"),
+        FileReadTool(file_path="playbooks/playbook_writer_playbook.md"),
     ]
+    
+    search_tool = SerperDevTool() if os.getenv("SERPER_API_KEY") else None
+    researcher_tools = playbook_tools + ([search_tool] if search_tool else [])
     
     planner = Agent(
         role=AGENTS["Planner"]["role"],
         goal="Lead brutally honest planning discussions. Expose vague ideas, define realistic MVP scope, ask hard clarifying questions, and force the team to ship something valuable fast. Reference playbooks constantly.",
         backstory=AGENTS["Planner"]["backstory"] + "\n\n" + playbooks.get("planner_playbook", ""),
         tools=playbook_tools,
-        llm=llm_planner,
+        llm=llms["Planner"],
         memory=False,
         allow_delegation=True,
         verbose=False,
@@ -308,7 +341,7 @@ def create_vibe_crewai_agents(playbooks: dict, agent_configs: dict | None = None
         goal="Transform team decisions into elite, structured, copy-paste-ready build prompts with perfect tool choices, folder structure, coding standards, and vibe-matching instructions. Every prompt must feel alive and 95%+ first-try success rate.",
         backstory=AGENTS["BuildPromptWriter"]["backstory"] + "\n\n" + playbooks.get("prompt_writer_playbook", ""),
         tools=playbook_tools,
-        llm=llm_writer,
+        llm=llms["BuildPromptWriter"],
         memory=False,
         allow_delegation=True,
         verbose=False,
@@ -320,14 +353,53 @@ def create_vibe_crewai_agents(playbooks: dict, agent_configs: dict | None = None
         goal="Design interfaces with soul. Validate every plan and prompt visually. Provide precise component specs, micro-interactions, color systems, accessibility, and ready-to-use image generation prompts. Call out anything that feels dead or over-engineered.",
         backstory=AGENTS["UIDesigner"]["backstory"] + "\n\n" + playbooks.get("ui_designer_playbook", ""),
         tools=playbook_tools,
-        llm=llm_designer,
+        llm=llms["UIDesigner"],
         memory=False,
         allow_delegation=True,
         verbose=False,
         max_iter=6
     )
     
-    return {"Planner": planner, "BuildPromptWriter": prompt_writer, "UIDesigner": ui_designer}
+    researcher = Agent(
+        role=AGENTS["Researcher"]["role"],
+        goal="Scour the web to find the most accurate, state-of-the-art information regarding the topic.",
+        backstory=AGENTS["Researcher"]["backstory"] + "\n\n" + playbooks.get("researcher_playbook", ""),
+        tools=researcher_tools,
+        llm=llms["Researcher"],
+        memory=False,
+        allow_delegation=True,
+        verbose=False,
+        max_iter=6
+    )
+    
+    verifier = Agent(
+        role=AGENTS["Verifier"]["role"],
+        goal="Fact-check all claims made by the Researcher, demand citations, and reject weak evidence.",
+        backstory=AGENTS["Verifier"]["backstory"] + "\n\n" + playbooks.get("verifier_playbook", ""),
+        tools=playbook_tools,
+        llm=llms["Verifier"],
+        memory=False,
+        allow_delegation=True,
+        verbose=False,
+        max_iter=6
+    )
+    
+    playbook_writer = Agent(
+        role=AGENTS["PlaybookWriter"]["role"],
+        goal="Synthesize the verified research into a clean, highly actionable markdown playbook.",
+        backstory=AGENTS["PlaybookWriter"]["backstory"] + "\n\n" + playbooks.get("playbook_writer_playbook", ""),
+        tools=playbook_tools,
+        llm=llms["PlaybookWriter"],
+        memory=False,
+        allow_delegation=True,
+        verbose=False,
+        max_iter=6
+    )
+    
+    return {
+        "Planner": planner, "BuildPromptWriter": prompt_writer, "UIDesigner": ui_designer,
+        "Researcher": researcher, "Verifier": verifier, "PlaybookWriter": playbook_writer
+    }
 
 def get_crewai_response(agent, agent_name: str, history: list, idea: str, visual_analysis: str, round_num: int):
     """Get response from a real CrewAI agent (with tools, memory, delegation)"""
@@ -383,15 +455,16 @@ def format_history_for_prompt(history):
         formatted.append(f"**{msg['agent']}** (Round {msg.get('round_num', '?')}): {msg['content'][:280]}...")
     return "\n\n".join(formatted)
 
-def synthesize_final_outputs_crewai(agents: dict, history: list, idea: str, visual_analysis: str, playbooks: dict, model: str, api_key: str, base_url: str):
+def synthesize_final_outputs_crewai(agents: dict, synthesis_agent_name: str, history: list, idea: str, visual_analysis: str, playbooks: dict, model: str, api_key: str, base_url: str):
     """Use a real CrewAI task for high-quality final synthesis"""
     if not api_key:
         return "❌ Synthesis failed: No API key available for synthesis model."
     llm = LLM(model=model, api_key=api_key, base_url=base_url, temperature=0.5)
     
-    synthesis_agent = agents["Planner"]
+    synthesis_agent = agents[synthesis_agent_name]
     
-    task_desc = f"""You are the VibeAgents Chief Synthesizer (Planner leading final output).
+    if synthesis_agent_name == "Planner":
+        task_desc = f"""You are the VibeAgents Chief Synthesizer ({synthesis_agent_name} leading final output).
 
 PROJECT IDEA: {idea}
 
@@ -421,6 +494,32 @@ The 3-4 hardest questions the team still has.
 Immediate actions for the human (copy prompts, create repo, etc.)
 
 Format beautifully with emojis and clear headings. Be as detailed and actionable as possible."""
+    else:
+        task_desc = f"""You are the VibeAgents Playbook Synthesizer ({synthesis_agent_name} leading final output).
+
+RESEARCH TOPIC / OBJECTIVE: {idea}
+
+FULL DISCUSSION TRANSCRIPT (verified research data):
+{json.dumps([{"agent": m["agent"], "content": m["content"][:400]} for m in history[-10:]], indent=2)}
+
+Now produce the **FINAL PLAYBOOK** in clean, professional Markdown with these exact sections:
+
+## 📖 EXECUTIVE SUMMARY
+(Brief overview of the topic, why it matters, and key takeaways)
+
+## 🏗️ CORE CONCEPTS & ARCHITECTURE
+(Deep dive into the verified technical concepts, tools, and best practices)
+
+## 🛠️ STEP-BY-STEP PLAYBOOK
+(Actionable, numbered instructions or recipes for implementation)
+
+## 🔗 VERIFIED SOURCES & CITATIONS
+(List of the specific verified sources, YouTube channels, docs, or threads that contributed to this research)
+
+## ⚠️ PITFALLS & ANTI-PATTERNS
+(What NOT to do, based on the Verifier's pushbacks)
+
+Format beautifully with emojis and clear headings. Be as detailed, technically accurate, and actionable as possible."""
 
     task = Task(
         description=task_desc,
@@ -456,6 +555,17 @@ for _ak, _sk in AGENT_CONFIG_KEYS.items():
 # ============== SIDEBAR ==============
 with st.sidebar:
     st.title("⚙️ VibeAgents Control")
+    
+    workflow_mode = st.radio(
+        "Workflow Mode",
+        ["🛠️ Vibe Coding Assistant", "📘 Deep Research & Playbook Creator"],
+        help="Choose between building an app or researching a topic to create a playbook."
+    )
+    
+    if "Coding" in workflow_mode:
+        active_agent_names = ["Planner", "BuildPromptWriter", "UIDesigner"]
+    else:
+        active_agent_names = ["Researcher", "Verifier", "PlaybookWriter"]
 
     # ── Team Overview — rendered via placeholder AFTER widgets below ────
     _team_overview_placeholder = st.empty()
@@ -469,8 +579,8 @@ with st.sidebar:
         new_prov = st.session_state.get(f"{sk}_prov", "xAI Grok")
         st.session_state[f"{sk}_url"] = PROVIDERS[new_prov]["base_url"]
 
-    for agent_name, state_key in AGENT_CONFIG_KEYS.items():
-        agent_info = AGENTS[agent_name]
+    for agent_name in active_agent_names:
+        state_key = AGENT_CONFIG_KEYS[agent_name]
         a_cfg = st.session_state[state_key]
 
         with st.expander(f"{agent_info['emoji']} **{agent_name}** — `{a_cfg.get('model','—')}`", expanded=False):
@@ -545,7 +655,8 @@ with st.sidebar:
     col_s, col_l = st.columns(2)
     with col_s:
         if st.button("💾 Save All Configs", use_container_width=True, type="primary"):
-            for agent_name, state_key in AGENT_CONFIG_KEYS.items():
+            for agent_name in active_agent_names:
+                state_key = AGENT_CONFIG_KEYS[agent_name]
                 new_cfg = {
                     "provider": st.session_state.get(f"{state_key}_prov", "xAI Grok"),
                     "api_key": st.session_state.get(f"{state_key}_key", ""),
@@ -553,7 +664,7 @@ with st.sidebar:
                     "model": st.session_state.get(f"{state_key}_model", "grok-4.3"),
                 }
                 st.session_state[state_key] = new_cfg
-            # Persist a backup copy
+            # Persist a backup copy of all configs
             st.session_state["saved_agent_configs"] = {
                 sk: st.session_state[sk].copy() for sk in AGENT_CONFIG_KEYS.values()
             }
@@ -573,7 +684,7 @@ with st.sidebar:
     # ── Fill Team Overview placeholder (widgets above have now created their keys) ──
     _ov_models = []
     _ov_lines = []
-    for _an in AGENT_CONFIG_KEYS:
+    for _an in active_agent_names:
         _cfg = get_agent_config(_an)
         _m = _cfg.get("model", "—")
         _ov_models.append(_m)
@@ -590,7 +701,7 @@ with st.sidebar:
         margin-bottom:14px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
           <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:1px;color:#8b949e;">Team Overview</span>
-          <span style="font-size:0.7rem;color:#58a6ff;">3 Agents</span>
+          <span style="font-size:0.7rem;color:#58a6ff;">{len(active_agent_names)} Agents</span>
         </div>
         <div style="font-size:0.78rem;color:#c9d1d9;line-height:1.6;">
           {'<br/>'.join(_ov_lines)}
@@ -768,43 +879,58 @@ with st.sidebar:
 st.title("🚀 VibeAgents Platform")
 st.caption("Your virtual AI coworkers (now with real CrewAI tools, memory & delegation)")
 
+if "Coding" in workflow_mode:
+    idea_label = "💡 Your Project Idea / Vibe Description"
+    idea_placeholder = "A modern habit tracker with AI insights, social accountability feed, beautiful dark minimalist design, and streak celebrations that feel rewarding not gamified..."
+else:
+    idea_label = "🎯 Research Topic / Playbook Objective"
+    idea_placeholder = "Create a comprehensive playbook on deploying a scalable Supabase Edge Functions architecture..."
+
 col1, col2 = st.columns([3, 1])
 with col1:
     idea = st.text_area(
-        "💡 Your Project Idea / Vibe Description",
-        placeholder="A modern habit tracker with AI insights, social accountability feed, beautiful dark minimalist design, and streak celebrations that feel rewarding not gamified...",
+        idea_label,
+        placeholder=idea_placeholder,
         height=120,
         key="idea_input"
     )
 
 with col2:
-    st.write("**Visual References (now with vision)**")
-    uploaded_files = st.file_uploader(
-        "Upload screenshots / mockups",
-        type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=True,
-        help="Agents will *see* these via gpt-4o vision analysis"
-    )
-    
-    captions = []
-    if uploaded_files:
-        for i, file in enumerate(uploaded_files):
-            col_img, col_cap = st.columns([1, 2])
-            with col_img:
-                img = Image.open(file)
-                st.image(img, width=80)
-            with col_cap:
-                cap = st.text_input(f"Caption #{i+1}", value=f"Reference {i+1}: {file.name}", key=f"cap_{i}")
-                captions.append(cap)
-        st.session_state.visual_refs = " | ".join(captions)
-        st.session_state.uploaded_images = uploaded_files
-        st.session_state.uploaded_captions = captions
+    if "Coding" in workflow_mode:
+        st.write("**Visual References (now with vision)**")
+        uploaded_files = st.file_uploader(
+            "Upload screenshots / mockups",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            help="Agents will *see* these via gpt-4o vision analysis"
+        )
+        
+        captions = []
+        if uploaded_files:
+            for i, file in enumerate(uploaded_files):
+                col_img, col_cap = st.columns([1, 2])
+                with col_img:
+                    img = Image.open(file)
+                    st.image(img, width=80)
+                with col_cap:
+                    cap = st.text_input(f"Caption #{i+1}", value=f"Reference {i+1}: {file.name}", key=f"cap_{i}")
+                    captions.append(cap)
+            st.session_state.visual_refs = " | ".join(captions)
+            st.session_state.uploaded_images = uploaded_files
+            st.session_state.uploaded_captions = captions
+        else:
+            st.session_state.visual_refs = ""
+            if "uploaded_images" in st.session_state:
+                del st.session_state.uploaded_images
     else:
+        st.info("ℹ️ Research Mode active.\n\nVisuals are disabled for Research mode. Enter your topic or playbook request on the left.")
+        uploaded_files = None
+        captions = []
         st.session_state.visual_refs = ""
         if "uploaded_images" in st.session_state:
             del st.session_state.uploaded_images
 
-if st.button("🚀 LAUNCH AGENT COLLABORATION (CrewAI + Vision)", type="primary", use_container_width=True, disabled=not idea.strip()):
+if st.button("🚀 LAUNCH COLLABORATION", type="primary", use_container_width=True, disabled=not idea.strip()):
   try:
     st.session_state.history = []
     st.session_state.final_outputs = ""
@@ -818,7 +944,7 @@ if st.button("🚀 LAUNCH AGENT COLLABORATION (CrewAI + Vision)", type="primary"
     preset = st.session_state.get("model_preset", "smart")
     
     # Build per-agent config dicts from session_state
-    agent_cfgs = {an: _validate_agent_config(an, get_agent_config(an)) for an in AGENT_CONFIG_KEYS}
+    agent_cfgs = {an: _validate_agent_config(an, get_agent_config(an)) for an in active_agent_names}
     
     def _override_all_agents(model: str, provider: str):
         """Override all agents to the same model + correct provider base_url.
@@ -865,8 +991,10 @@ if st.button("🚀 LAUNCH AGENT COLLABORATION (CrewAI + Vision)", type="primary"
         _override_all_agents("grok-4-1-fast-reasoning", "xAI Grok")
     else:
         # Per-agent mode — each agent uses its own validated config
-        vision_model = agent_cfgs["Planner"]["model"]
-        synthesis_model = agent_cfgs["Planner"]["model"]
+        # Default to the first active agent's model
+        default_an = active_agent_names[0]
+        vision_model = agent_cfgs[default_an]["model"]
+        synthesis_model = agent_cfgs[default_an]["model"]
     
     # ── Safety check: warn if any agent has mismatched config ────
     for an, cfg in agent_cfgs.items():
@@ -898,7 +1026,8 @@ if st.button("🚀 LAUNCH AGENT COLLABORATION (CrewAI + Vision)", type="primary"
         st.error(f"Failed to create CrewAI agents: {e}")
         st.stop()
     
-    agent_cycle = ["Planner", "BuildPromptWriter", "UIDesigner"]
+    agent_cycle = ["Planner", "BuildPromptWriter", "UIDesigner"] if "Coding" in workflow_mode else ["Researcher", "Verifier"]
+    evaluator_agent = "BuildPromptWriter" if "Coding" in workflow_mode else "Verifier"
     prompts_ready = False
     final_round_count = 0
     
@@ -957,12 +1086,14 @@ if st.button("🚀 LAUNCH AGENT COLLABORATION (CrewAI + Vision)", type="primary"
         # ── Open Discussion quality check ────────────────
         if open_discussion and round_num < num_rounds:
             progress_bar.progress(
-                (round_num * 3) / (num_rounds * 3) * 0.6 + 0.35,
-                text=f"Round {round_num}/{num_rounds} — 🔍 BuildPromptWriter evaluating prompt quality..."
+                (round_num * len(agent_cycle)) / (num_rounds * len(agent_cycle)) * 0.6 + 0.35,
+                text=f"Round {round_num}/{num_rounds} — 🔍 {evaluator_agent} evaluating quality..."
             )
             
-            writer_agent = agents["BuildPromptWriter"]
-            eval_task_desc = f"""You have just completed Round {round_num} of collaboration.
+            writer_agent = agents[evaluator_agent]
+            
+            if "Coding" in workflow_mode:
+                eval_task_desc = f"""You have just completed Round {round_num} of collaboration.
 
 Review ALL build prompts produced so far in the discussion transcript.
 
@@ -971,6 +1102,19 @@ A production-ready prompt must have: clear numbered requirements, explicit tool 
 
 Reply with EXACTLY one of:
 - YES - [short reason why they are ready]
+- NO - [what still needs improvement]
+
+Nothing else. One line only."""
+            else:
+                eval_task_desc = f"""You have just completed Round {round_num} of collaboration.
+
+Review the research produced so far in the discussion transcript.
+
+Is the research **VERIFIED and PRODUCTION-READY**?
+Verified research must: contain solid citations, cover all aspects of the user's request, have no unverified hallucinatory claims, and be ready to be turned into a playbook.
+
+Reply with EXACTLY one of:
+- YES - [short reason why it is ready]
 - NO - [what still needs improvement]
 
 Nothing else. One line only."""
@@ -990,11 +1134,11 @@ Nothing else. One line only."""
             
             # Record the evaluation in history
             st.session_state.history.append({
-                "agent": "BuildPromptWriter",
+                "agent": evaluator_agent,
                 "content": f"**🔍 Quality Evaluation (Round {round_num}):** {eval_text}",
                 "round": f"Round {round_num} — Eval",
                 "round_num": round_num,
-                "model": agent_cfgs.get("BuildPromptWriter", {}).get("model", "—"),
+                "model": agent_cfgs.get(evaluator_agent, {}).get("model", "—"),
                 "is_eval": True,
                 "timestamp": datetime.now().isoformat()
             })
@@ -1004,11 +1148,11 @@ Nothing else. One line only."""
             if eval_text.upper().startswith("YES"):
                 prompts_ready = True
                 progress_bar.progress(0.92,
-                    text=f"✅ Prompts declared production-ready after {round_num} rounds!")
+                    text=f"✅ Output declared production-ready after {round_num} rounds!")
                 break
             else:
                 progress_bar.progress(
-                    (round_num * 3) / (num_rounds * 3) * 0.6 + 0.35,
+                    (round_num * len(agent_cycle)) / (num_rounds * len(agent_cycle)) * 0.6 + 0.35,
                     text=f"Round {round_num}/{num_rounds} — ❌ Not ready yet. Continuing refinement..."
                 )
                 time.sleep(0.5)
@@ -1019,9 +1163,9 @@ Nothing else. One line only."""
     convergence_note = ""
     if open_discussion:
         if prompts_ready:
-            convergence_note = f"\n\n**Note:** Agents converged after {final_round_count} rounds (prompts declared production-ready by BuildPromptWriter)."
+            convergence_note = f"\n\n**Note:** Agents converged after {final_round_count} rounds (declared production-ready by {evaluator_agent})."
         else:
-            convergence_note = f"\n\n**Note:** Reached max rounds ({num_rounds}). Prompts may benefit from further refinement."
+            convergence_note = f"\n\n**Note:** Reached max rounds ({num_rounds}). Output may benefit from further refinement."
     
     # Find the best API key for synthesis — prefer the agent whose provider matches
     synthesis_cfg = None
@@ -1033,11 +1177,13 @@ Nothing else. One line only."""
                 synthesis_cfg = cfg
                 break
     if not synthesis_cfg:
-        # Fallback: use Planner config
-        synthesis_cfg = agent_cfgs.get("Planner", get_agent_config("Planner"))
+        # Fallback: use first active agent config
+        synthesis_cfg = agent_cfgs.get(active_agent_names[0], get_agent_config(active_agent_names[0]))
     
+    synthesis_leader = "Planner" if "Coding" in workflow_mode else "PlaybookWriter"
     final = synthesize_final_outputs_crewai(
         agents=agents,
+        synthesis_agent_name=synthesis_leader,
         history=st.session_state.history,
         idea=idea,
         visual_analysis=visual_analysis,
