@@ -39,6 +39,10 @@ PROVIDERS = {
         "api_placeholder": "AIza...",
         "help": "Using Google Gemini Enterprise / Agent Platform",
         "models": [
+            "gemini-1.5-pro",
+            "gemini-1.5-flash",
+            "gemini-2.0-pro-exp",
+            "gemini-2.0-flash-exp",
             "gemini-3.1-pro-preview",
             "gemini-3.1-flash-preview",
             "gemini-3.1-flash-lite-preview",
@@ -292,7 +296,7 @@ def create_vibe_crewai_agents(playbooks: dict, agent_configs: dict | None = None
         backstory=AGENTS["Planner"]["backstory"] + "\n\n" + playbooks.get("planner_playbook", ""),
         tools=playbook_tools,
         llm=llm_planner,
-        memory=True,
+        memory=False,
         allow_delegation=True,
         verbose=False,
         max_iter=6,
@@ -305,7 +309,7 @@ def create_vibe_crewai_agents(playbooks: dict, agent_configs: dict | None = None
         backstory=AGENTS["BuildPromptWriter"]["backstory"] + "\n\n" + playbooks.get("prompt_writer_playbook", ""),
         tools=playbook_tools,
         llm=llm_writer,
-        memory=True,
+        memory=False,
         allow_delegation=True,
         verbose=False,
         max_iter=6
@@ -317,7 +321,7 @@ def create_vibe_crewai_agents(playbooks: dict, agent_configs: dict | None = None
         backstory=AGENTS["UIDesigner"]["backstory"] + "\n\n" + playbooks.get("ui_designer_playbook", ""),
         tools=playbook_tools,
         llm=llm_designer,
-        memory=True,
+        memory=False,
         allow_delegation=True,
         verbose=False,
         max_iter=6
@@ -361,7 +365,7 @@ Your response:"""
         agents=[agent],
         tasks=[task],
         process=Process.sequential,
-        memory=True,
+        memory=False,
         verbose=False
     )
     
@@ -381,6 +385,8 @@ def format_history_for_prompt(history):
 
 def synthesize_final_outputs_crewai(agents: dict, history: list, idea: str, visual_analysis: str, playbooks: dict, model: str, api_key: str, base_url: str):
     """Use a real CrewAI task for high-quality final synthesis"""
+    if not api_key:
+        return "❌ Synthesis failed: No API key available for synthesis model."
     llm = LLM(model=model, api_key=api_key, base_url=base_url, temperature=0.5)
     
     synthesis_agent = agents["Planner"]
@@ -422,7 +428,7 @@ Format beautifully with emojis and clear headings. Be as detailed and actionable
         agent=synthesis_agent,
     )
     
-    mini_crew = Crew(agents=[synthesis_agent], tasks=[task], process=Process.sequential, memory=True, verbose=False)
+    mini_crew = Crew(agents=[synthesis_agent], tasks=[task], process=Process.sequential, memory=False, verbose=False)
     try:
         result = mini_crew.kickoff()
         return str(result.raw).strip() if hasattr(result, 'raw') else str(result).strip()
@@ -522,6 +528,18 @@ with st.sidebar:
             _prov_help = prov_info.get("help", "")
             _help_suffix = f" — {_prov_help}" if _prov_help else ""
             st.caption(f"🔗 {sel_prov} • {len(prov_info['models'])} models{_help_suffix}")
+
+            # ── Per-agent Save button ────────────────────────
+            if st.button(f"💾 Save {agent_name}", key=f"save_{state_key}", use_container_width=True):
+                new_cfg = {
+                    "provider": st.session_state.get(f"{state_key}_prov", "xAI Grok"),
+                    "api_key": st.session_state.get(f"{state_key}_key", ""),
+                    "base_url": st.session_state.get(f"{state_key}_url", ""),
+                    "model": st.session_state.get(f"{state_key}_model", "grok-4.3"),
+                }
+                st.session_state[state_key] = new_cfg
+                st.toast(f"✅ {agent_name} config saved!", icon="💾")
+                st.rerun()
 
     # ── Save All / Load Saved ────────────────────────────
     col_s, col_l = st.columns(2)
@@ -803,14 +821,27 @@ if st.button("🚀 LAUNCH AGENT COLLABORATION (CrewAI + Vision)", type="primary"
     agent_cfgs = {an: _validate_agent_config(an, get_agent_config(an)) for an in AGENT_CONFIG_KEYS}
     
     def _override_all_agents(model: str, provider: str):
-        """Override all agents to the same model + correct provider base_url."""
+        """Override all agents to the same model + correct provider base_url.
+        
+        Also finds the best API key for the target provider: checks if any
+        agent already has a key configured for this provider, otherwise
+        keeps whatever key each agent has (user must fix manually).
+        """
         prov = PROVIDERS[provider]
+        # Find a valid API key for the target provider from any agent
+        target_api_key = ""
+        for an in agent_cfgs:
+            if agent_cfgs[an].get("provider") == provider and agent_cfgs[an].get("api_key"):
+                target_api_key = agent_cfgs[an]["api_key"]
+                break
         for an in agent_cfgs:
             agent_cfgs[an] = {
                 **agent_cfgs[an],
                 "model": model,
                 "base_url": prov["base_url"],
                 "provider": provider,
+                # Use the found key, or keep the agent's existing key as fallback
+                "api_key": target_api_key or agent_cfgs[an].get("api_key", ""),
             }
     
     # ============== SMART ROUTING LOGIC ==============
@@ -871,6 +902,27 @@ if st.button("🚀 LAUNCH AGENT COLLABORATION (CrewAI + Vision)", type="primary"
     prompts_ready = False
     final_round_count = 0
     
+    live_chat_placeholder = st.empty()
+    
+    def render_live_history():
+        with live_chat_placeholder.container():
+            st.markdown("### 🔴 Live Discussion Room")
+            for msg in st.session_state.history:
+                agent_info = AGENTS[msg['agent']]
+                with st.chat_message(msg['agent'].lower(), avatar=agent_info['emoji']):
+                    _msg_model = msg.get('model', '')
+                    st.markdown(f"**{msg['agent']}** • *{msg.get('round', '')}* • `{_msg_model}`")
+                    if msg.get("is_eval"):
+                        eval_color = "#238636" if "YES" in msg["content"].upper() else "#da3633"
+                        st.markdown(
+                            f'<div style="border-left:3px solid {eval_color};padding:6px 12px;'
+                            f'background:#0d1117;border-radius:4px;font-size:0.85rem;">'
+                            f'{msg["content"]}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(msg['content'])
+
     for round_num in range(1, num_rounds + 1):
         final_round_count = round_num
         for agent_name in agent_cycle:
@@ -899,6 +951,7 @@ if st.button("🚀 LAUNCH AGENT COLLABORATION (CrewAI + Vision)", type="primary"
                 "timestamp": datetime.now().isoformat()
             })
             
+            render_live_history()
             time.sleep(0.35)
         
         # ── Open Discussion quality check ────────────────
@@ -928,7 +981,7 @@ Nothing else. One line only."""
                 agent=writer_agent,
             )
             eval_crew = Crew(agents=[writer_agent], tasks=[eval_task],
-                             process=Process.sequential, memory=True, verbose=False)
+                             process=Process.sequential, memory=False, verbose=False)
             try:
                 eval_result = eval_crew.kickoff()
                 eval_text = str(eval_result.raw).strip() if hasattr(eval_result, 'raw') else str(eval_result).strip()
@@ -945,6 +998,8 @@ Nothing else. One line only."""
                 "is_eval": True,
                 "timestamp": datetime.now().isoformat()
             })
+            
+            render_live_history()
             
             if eval_text.upper().startswith("YES"):
                 prompts_ready = True
@@ -968,7 +1023,19 @@ Nothing else. One line only."""
         else:
             convergence_note = f"\n\n**Note:** Reached max rounds ({num_rounds}). Prompts may benefit from further refinement."
     
-    planner_cfg = agent_cfgs.get("Planner", get_agent_config("Planner"))
+    # Find the best API key for synthesis — prefer the agent whose provider matches
+    synthesis_cfg = None
+    synthesis_resolved = _resolve_provider_for_model(synthesis_model)
+    if synthesis_resolved:
+        # Find an agent configured for the synthesis provider
+        for an, cfg in agent_cfgs.items():
+            if cfg.get("provider") == synthesis_resolved["provider"] and cfg.get("api_key"):
+                synthesis_cfg = cfg
+                break
+    if not synthesis_cfg:
+        # Fallback: use Planner config
+        synthesis_cfg = agent_cfgs.get("Planner", get_agent_config("Planner"))
+    
     final = synthesize_final_outputs_crewai(
         agents=agents,
         history=st.session_state.history,
@@ -976,10 +1043,12 @@ Nothing else. One line only."""
         visual_analysis=visual_analysis,
         playbooks=playbooks,
         model=synthesis_model,
-        api_key=planner_cfg.get("api_key") or os.getenv("OPENAI_API_KEY"),
-        base_url=planner_cfg.get("base_url") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        api_key=synthesis_cfg.get("api_key", ""),
+        base_url=synthesis_cfg.get("base_url", synthesis_resolved["base_url"] if synthesis_resolved else "")
     )
     st.session_state.final_outputs = final + convergence_note
+    
+    live_chat_placeholder.empty()
     
     st.session_state["_debug_launch_status"] = f"✅ Success — {final_round_count} rounds"
     progress_bar.progress(1.0, text="✅ Collaboration complete!")
