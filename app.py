@@ -35,7 +35,7 @@ PROVIDERS = {
     },
     "Google Vertex AI": {
         "emoji": "🌐",
-        "base_url": "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1256608e-91dd-436b-a03/locations/us-central1/publishers/google/models/",
+        "base_url": "https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/publishers/google/models/",
         "api_placeholder": "AIza...",
         "help": "Using Google Gemini Enterprise / Agent Platform",
         "models": [
